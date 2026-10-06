@@ -15,6 +15,22 @@ mod ray;
 use color::Color;
 use ray::Ray;
 
+struct Sphere {
+    center: Vec3,
+    radius: f32,
+}
+
+impl Sphere {
+    fn did_hit(&self, r: &Ray) -> bool {
+        let origin_to_center = self.center - r.origin;
+        let a = r.direction.dot(r.direction);
+        let b = 2.0 * r.direction.dot(origin_to_center);
+        let c = origin_to_center.dot(origin_to_center) - self.radius * self.radius;
+
+        (b * b - 4.0 * a * c) >= 0.0
+    }
+}
+
 fn write_color<T: Write>(out: &mut T, color: &Color) -> Result<(), std::io::Error> {
     let ir = (color.r() * 255.99) as u8;
     let ig = (color.g() * 255.99) as u8;
@@ -26,9 +42,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     assert!(args.len() > 1);
 
-    let out_path = &args[1];
-
     // Image
+    let out_path = &args[1];
     let aspect_ratio = 16.0 / 9.0_f32;
     assert!(aspect_ratio > 0.0);
     let inv_aspect_ratio = aspect_ratio.recip();
@@ -56,6 +71,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pixel_dv = viewport_v / iheight as f32;
     let pixel_00 = viewport_upper_left + 0.5 * (pixel_du + pixel_dv);
 
+    // Objects
+    let sphere = Sphere {
+        center: Vec3::new(0.0, 0.0, -2.0),
+        radius: 1.0,
+    };
+
     // Render
     let header = format!("P3\n{iwidth} {iheight}\n255\n").into_bytes();
 
@@ -80,11 +101,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 direction: pixel - camera_center,
             };
 
-            let unit_dir = ray.direction.normalize();
-            let a = 0.5 * (unit_dir.y + 1.0);
-            let ray_color =
-                Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0));
-            write_color(&mut buf, &ray_color)?;
+            if sphere.did_hit(&ray) {
+                write_color(&mut buf, &Color::new(1.0, 0.0, 0.0))?;
+            } else {
+                let unit_dir = ray.direction.normalize();
+                let a = 0.5 * (unit_dir.y + 1.0);
+                let ray_color =
+                    Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0));
+                write_color(&mut buf, &ray_color)?;
+            }
         }
     }
 
