@@ -1,25 +1,68 @@
+/// Image Raytracer
+/// based on the excellent:
+/// https://raytracing.github.io/books/RayTracingInOneWeekend.html
+///
+/// Implementation Details:
+/// - Right handed coordinate system
+/// - Traced from `pixel_00` (upper left) to pixel_wh (bottom right).
+use glam::Vec3;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::{env, error::Error, io::Write};
 
 mod color;
+mod ray;
+
 use color::Color;
+use ray::Ray;
+
+fn write_color<T: Write>(out: &mut T, color: &Color) -> Result<(), std::io::Error> {
+    let ir = (color.r() * 255.99) as u8;
+    let ig = (color.g() * 255.99) as u8;
+    let ib = (color.b() * 255.99) as u8;
+    writeln!(out, "{ir} {ig} {ib}")
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     assert!(args.len() > 1);
 
-    let width = 256;
-    let height = 256;
-    assert!(width > 0 && height > 0);
-
     let out_path = &args[1];
 
-    let header = format!("P3\n{width} {height}\n255\n").into_bytes();
+    // Image
+    let aspect_ratio = 16.0 / 9.0_f32;
+    assert!(aspect_ratio > 0.0);
+    let inv_aspect_ratio = aspect_ratio.recip();
 
-    let mut buf: Vec<u8> = Vec::with_capacity(header.len() + width * height * 12);
+    let iwidth = 256;
+    let iheight = ((iwidth as f32 * inv_aspect_ratio).round() as i32).max(1);
+    let pixel_count = (iwidth * iheight * 12) as usize;
+
+    // Camera
+    let focal_length = 1.0_f32;
+    let camera_center = Vec3::ZERO;
+
+    let viewport_height = 2.0;
+    let viewport_width = viewport_height * iwidth as f32 / iheight as f32;
+
+    let viewport_u = Vec3::new(viewport_width, 0.0, 0.0);
+    // -viewport_height to support y down
+    let viewport_v = Vec3::new(0.0, -viewport_height, 0.0);
+
+    // upper left = forward + half width + half height
+    let viewport_upper_left =
+        camera_center - Vec3::new(0.0, 0.0, focal_length) - 0.5 * (viewport_u + viewport_v);
+
+    let pixel_du = viewport_u / iwidth as f32;
+    let pixel_dv = viewport_v / iheight as f32;
+    let pixel_00 = viewport_upper_left + 0.5 * (pixel_du + pixel_dv);
+
+    // Render
+    let header = format!("P3\n{iwidth} {iheight}\n255\n").into_bytes();
+
+    let mut buf: Vec<u8> = Vec::with_capacity(header.len() + pixel_count);
     buf.write_all(&header)?;
 
-    let pb = ProgressBar::new(height as u64);
+    let pb = ProgressBar::new(iheight as u64);
     pb.set_style(
         ProgressStyle::with_template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} rows ({eta})",
@@ -28,19 +71,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    for row in 0..height {
+    for row in 0..iheight {
         pb.inc(1);
-        for col in 0..width {
-            let color = Color::new(
-                col as f32 / (width - 1) as f32,
-                row as f32 / (height - 1) as f32,
-                0.0,
-            );
+        for col in 0..iwidth {
+            let pixel = pixel_00 + col as f32 * pixel_du + row as f32 * pixel_dv;
+            let ray = Ray {
+                origin: camera_center,
+                direction: pixel - camera_center,
+            };
 
-            let ir = (color.r() * 255.99) as u8;
-            let ig = (color.g() * 255.99) as u8;
-            let ib = 0_u8;
-            buf.write_all(format!("{ir} {ig} {ib}\n").as_bytes())?;
+            let unit_dir = ray.direction.normalize();
+            let a = 0.5 * (unit_dir.y + 1.0);
+            let ray_color =
+                Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0));
+            write_color(&mut buf, &ray_color)?;
         }
     }
 
