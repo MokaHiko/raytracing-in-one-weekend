@@ -15,17 +15,46 @@ mod ray;
 use color::Color;
 use ray::Ray;
 
+/// Returned by [`Hittable::intersect`].
+struct Hit {
+    #[allow(dead_code)]
+    point: Vec3,
+    /// Unit normal always opposite to ray.
+    normal: Vec3,
+    #[allow(dead_code)]
+    /// `true` if ray came from outside the surface.
+    front_face: bool,
+    #[allow(dead_code)]
+    t: f32,
+}
+
+trait Hittable {
+    /// Intersects `r` with object surface.
+    ///
+    /// Returns the ray parameter `t` of hit point `P(t) = O + tD`
+    /// or [`None`] if misses.
+    fn intersect(&self, r: &Ray) -> Option<Hit>;
+}
+
+enum Shape {
+    Sphere(Sphere),
+}
+
+impl Shape {
+    fn intersect(&self, r: &Ray) -> Option<Hit> {
+        match self {
+            Shape::Sphere(sphere) => sphere.intersect(r),
+        }
+    }
+}
+
 struct Sphere {
     center: Vec3,
     radius: f32,
 }
 
-impl Sphere {
-    /// Intersects `r` with this object.
-    ///
-    /// Returns the ray parameter `t` of hit point `P(t) = O + tD`
-    /// or [`None`] if misses.
-    fn intersect(&self, r: &Ray) -> Option<f32> {
+impl Hittable for Sphere {
+    fn intersect(&self, r: &Ray) -> Option<Hit> {
         let origin_to_center = self.center - r.origin;
         let a = r.direction.length_squared();
         let h = r.direction.dot(origin_to_center);
@@ -41,7 +70,20 @@ impl Sphere {
         let t = (h - d.sqrt()) / a;
 
         // t > 0.0 guarantees infront of ray
-        if t > 0.0 { Some(t) } else { None }
+        if t > 0.0 {
+            let point = r.at(t);
+            let normal = (point - self.center).normalize();
+            // determine if ray come from is outside shape's surface
+            let front_face = r.direction.dot(normal) < 0.0;
+            Some(Hit {
+                point,
+                normal,
+                t,
+                front_face,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -86,14 +128,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pixel_00 = viewport_upper_left + 0.5 * (pixel_du + pixel_dv);
 
     // Objects
-    let sphere = Sphere {
-        center: Vec3::new(0.0, 0.0, -2.0),
-        radius: 1.0,
-    };
+    let shapes: Vec<Shape> = vec![
+        Shape::Sphere(Sphere {
+            center: Vec3::new(0.0, 0.0, -2.0),
+            radius: 1.0,
+        }),
+        Shape::Sphere(Sphere {
+            center: Vec3::new(0.0, -100.5, -2.0),
+            radius: 100.0,
+        }),
+    ];
 
     // Render
     let header = format!("P3\n{iwidth} {iheight}\n255\n").into_bytes();
-
     let mut buf: Vec<u8> = Vec::with_capacity(header.len() + pixel_count);
     buf.write_all(&header)?;
 
@@ -115,21 +162,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                 direction: pixel - camera_center,
             };
 
-            if let Some(t) = sphere.intersect(&ray) {
-                let n = (ray.at(t) - sphere.center).normalize();
-                let n_rgb = 0.5 * (n + Vec3::ONE);
-                write_color(&mut buf, &Color::new(n_rgb.x, n_rgb.y, n_rgb.z))?;
-            } else {
-                let unit_dir = ray.direction.normalize();
-                let a = 0.5 * (unit_dir.y + 1.0);
-                let ray_color =
-                    Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0));
-                write_color(&mut buf, &ray_color)?;
-            }
+            let color = match shapes.iter().find_map(|f| f.intersect(&ray)) {
+                Some(hit) => {
+                    let n_rgb = 0.5 * (hit.normal + Vec3::ONE);
+                    Color::new(n_rgb.x, n_rgb.y, n_rgb.z)
+                }
+                None => {
+                    let unit_dir = ray.direction.normalize();
+                    let a = 0.5 * (unit_dir.y + 1.0);
+                    Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0))
+                }
+            };
+            write_color(&mut buf, &color)?;
         }
     }
 
     std::fs::write(out_path, buf)?;
-    print!("Contents written to {}", out_path);
+    print!("Contents written to '{}'", out_path);
     Ok(())
 }
