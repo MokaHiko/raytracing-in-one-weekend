@@ -21,13 +21,27 @@ struct Sphere {
 }
 
 impl Sphere {
-    fn did_hit(&self, r: &Ray) -> bool {
+    /// Intersects `r` with this object.
+    ///
+    /// Returns the ray parameter `t` of hit point `P(t) = O + tD`
+    /// or [`None`] if misses.
+    fn intersect(&self, r: &Ray) -> Option<f32> {
         let origin_to_center = self.center - r.origin;
-        let a = r.direction.dot(r.direction);
-        let b = 2.0 * r.direction.dot(origin_to_center);
-        let c = origin_to_center.dot(origin_to_center) - self.radius * self.radius;
+        let a = r.direction.length_squared();
+        let h = r.direction.dot(origin_to_center);
+        let c = origin_to_center.length_squared() - self.radius * self.radius;
 
-        (b * b - 4.0 * a * c) >= 0.0
+        // discriminant
+        let d = h * h - a * c;
+        if d < 0.0 {
+            return None;
+        }
+
+        // use `-` root of quadratic to get first hit
+        let t = (h - d.sqrt()) / a;
+
+        // t > 0.0 guarantees infront of ray
+        if t > 0.0 { Some(t) } else { None }
     }
 }
 
@@ -101,8 +115,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 direction: pixel - camera_center,
             };
 
-            if sphere.did_hit(&ray) {
-                write_color(&mut buf, &Color::new(1.0, 0.0, 0.0))?;
+            if let Some(t) = sphere.intersect(&ray) {
+                let n = (ray.at(t) - sphere.center).normalize();
+                let n_rgb = 0.5 * (n + Vec3::ONE);
+                write_color(&mut buf, &Color::new(n_rgb.x, n_rgb.y, n_rgb.z))?;
             } else {
                 let unit_dir = ray.direction.normalize();
                 let a = 0.5 * (unit_dir.y + 1.0);
