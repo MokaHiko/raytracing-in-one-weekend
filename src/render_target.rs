@@ -8,6 +8,11 @@ pub struct RenderTarget {
     buffer: Vec<Color>,
 }
 
+pub struct Extent2D {
+    pub width: usize,
+    pub height: usize,
+}
+
 pub struct FragMut<'a> {
     pub color: &'a mut Color,
     pub coord: IVec2,
@@ -23,11 +28,10 @@ impl RenderTarget {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn extent(&self) -> IVec2 {
-        IVec2 {
-            x: self.width as i32,
-            y: self.height as i32,
+    pub fn extent2d(&self) -> Extent2D {
+        Extent2D {
+            width: self.width,
+            height: self.height,
         }
     }
 
