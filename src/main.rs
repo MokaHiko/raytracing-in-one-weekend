@@ -11,9 +11,11 @@ use std::{env, error::Error, io::Write};
 
 mod color;
 mod ray;
+mod render_target;
 
 use color::Color;
 use ray::Ray;
+use render_target::RenderTarget;
 
 /// Returned by [`Hittable::intersect`].
 struct Hit {
@@ -108,6 +110,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let iheight = ((iwidth as f32 * inv_aspect_ratio).round() as i32).max(1);
     let pixel_count = (iwidth * iheight * 12) as usize;
 
+    let mut rt = RenderTarget::new(iwidth as usize, iheight as usize);
+
     // Camera
     let focal_length = 1.0_f32;
     let camera_center = Vec3::ZERO;
@@ -140,10 +144,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
 
     // Render
-    let header = format!("P3\n{iwidth} {iheight}\n255\n").into_bytes();
-    let mut buf: Vec<u8> = Vec::with_capacity(header.len() + pixel_count);
-    buf.write_all(&header)?;
-
     let pb = ProgressBar::new(iheight as u64);
     pb.set_style(
         ProgressStyle::with_template(
@@ -153,31 +153,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    for row in 0..iheight {
-        pb.inc(1);
-        for col in 0..iwidth {
-            let pixel = pixel_00 + col as f32 * pixel_du + row as f32 * pixel_dv;
-            let ray = Ray {
-                origin: camera_center,
-                direction: pixel - camera_center,
-            };
+    for frag in rt.fragments_mut() {
+        let pixel = pixel_00 + frag.coord.x as f32 * pixel_du + frag.coord.y as f32 * pixel_dv;
+        let ray = Ray {
+            origin: camera_center,
+            direction: pixel - camera_center,
+        };
 
-            let color = match shapes.iter().find_map(|f| f.intersect(&ray)) {
-                Some(hit) => {
-                    let n_rgb = 0.5 * (hit.normal + Vec3::ONE);
-                    Color::new(n_rgb.x, n_rgb.y, n_rgb.z)
-                }
-                None => {
-                    let unit_dir = ray.direction.normalize();
-                    let a = 0.5 * (unit_dir.y + 1.0);
-                    Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0))
-                }
-            };
-            write_color(&mut buf, &color)?;
-        }
+        *frag.color = match shapes.iter().find_map(|f| f.intersect(&ray)) {
+            Some(hit) => {
+                let n_rgb = 0.5 * (hit.normal + Vec3::ONE);
+                Color::new(n_rgb.x, n_rgb.y, n_rgb.z)
+            }
+            None => {
+                let unit_dir = ray.direction.normalize();
+                let a = 0.5 * (unit_dir.y + 1.0);
+                Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0))
+            }
+        };
+    }
+
+    // Output to .ppm format
+    let header = format!("P3\n{iwidth} {iheight}\n255\n").into_bytes();
+    let mut buf: Vec<u8> = Vec::with_capacity(header.len() + pixel_count);
+    buf.write_all(&header)?;
+
+    for color in rt.colors() {
+        write_color(&mut buf, color)?;
     }
 
     std::fs::write(out_path, buf)?;
     print!("Contents written to '{}'", out_path);
+
     Ok(())
 }
