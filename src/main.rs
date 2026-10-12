@@ -79,6 +79,7 @@ impl Hittable for Sphere {
             let normal = (point - self.center).normalize();
             // determine if ray come from is outside shape's surface
             let front_face = r.direction.dot(normal) < 0.0;
+            let normal = if front_face { normal } else { normal * -1.0 };
             Some(Hit {
                 point,
                 normal,
