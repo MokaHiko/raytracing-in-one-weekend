@@ -10,7 +10,7 @@ pub struct Camera {
 
 impl Camera {
     /// Create a [`Ray`] from origin to fragment in an extent.
-    pub fn view_point_to_ray(&self, x: i32, y: i32, extent: &Extent2D) -> Ray {
+    pub fn view_point_to_ray(&self, x: f32, y: f32, extent: &Extent2D) -> Ray {
         let viewport_height = self.viewport_height;
         let viewport_width = viewport_height * extent.width as f32 / extent.height as f32;
 
@@ -26,7 +26,7 @@ impl Camera {
         let pixel_dv = viewport_v / extent.height as f32;
         let pixel_00 = viewport_upper_left + 0.5 * (pixel_du + pixel_dv);
 
-        let pixel = pixel_00 + x as f32 * pixel_du + y as f32 * pixel_dv;
+        let pixel = pixel_00 + x * pixel_du + y * pixel_dv;
         Ray {
             origin: self.center,
             direction: pixel - self.center,
