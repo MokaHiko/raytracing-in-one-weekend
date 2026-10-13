@@ -7,6 +7,9 @@
 /// - Traced from `pixel_00` (upper left) to pixel_wh (bottom right).
 use glam::Vec3;
 use indicatif::{ProgressBar, ProgressStyle};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+use std::ops::RangeBounds;
 use std::{env, error::Error, io::Write};
 
 mod camera;
@@ -37,7 +40,7 @@ trait Hittable {
     ///
     /// Returns the ray parameter `t` of hit point `P(t) = O + tD`
     /// or [`None`] if misses.
-    fn intersect(&self, r: &Ray) -> Option<Hit>;
+    fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit>;
 }
 
 enum Shape {
@@ -45,9 +48,9 @@ enum Shape {
 }
 
 impl Shape {
-    fn intersect(&self, r: &Ray) -> Option<Hit> {
+    fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit> {
         match self {
-            Shape::Sphere(sphere) => sphere.intersect(r),
+            Shape::Sphere(sphere) => sphere.intersect(r, range),
         }
     }
 }
@@ -58,7 +61,7 @@ struct Sphere {
 }
 
 impl Hittable for Sphere {
-    fn intersect(&self, r: &Ray) -> Option<Hit> {
+    fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit> {
         let origin_to_center = self.center - r.origin;
         let a = r.direction.length_squared();
         let h = r.direction.dot(origin_to_center);
@@ -70,53 +73,64 @@ impl Hittable for Sphere {
             return None;
         }
 
-        // use `-` root of quadratic to get first hit
-        let t = (h - d.sqrt()) / a;
+        // use `-` root of quadratic first
+        let sqrtd = d.sqrt();
+        let mut t = (h - sqrtd) / a;
+        if !range.contains(&t) {
+            // try `+` root
+            t = (h + sqrtd) / a;
+            if !range.contains(&t) {
+                return None;
+            }
+        };
 
-        // t > 0.0 guarantees infront of ray
-        if t > 0.0 {
-            let point = r.at(t);
-            let normal = (point - self.center).normalize();
-            // determine if ray come from is outside shape's surface
-            let front_face = r.direction.dot(normal) < 0.0;
-            let normal = if front_face { normal } else { normal * -1.0 };
-            Some(Hit {
-                point,
-                normal,
-                t,
-                front_face,
-            })
-        } else {
-            None
-        }
+        let point = r.at(t);
+        let normal = (point - self.center).normalize();
+        // determine if ray come from is outside shape's surface
+        let front_face = r.direction.dot(normal) < 0.0;
+        let normal = if front_face { normal } else { normal * -1.0 };
+
+        Some(Hit {
+            point,
+            normal,
+            t,
+            front_face,
+        })
     }
 }
 
-fn render(
+fn render<T: rand::RngCore>(
     rt: &mut RenderTarget,
     camera: &Camera,
     shapes: &[Shape],
+    rng: &mut T,
+    sample_count: usize,
     progress_bar: Option<&ProgressBar>,
 ) {
     let extent = rt.extent2d();
     for frag in rt.fragments_mut() {
-        let ray = camera.view_point_to_ray(frag.coord.x, frag.coord.y, &extent);
-        *frag.color = match shapes
-            .iter()
-            .filter_map(|f| f.intersect(&ray))
-            .min_by(|a, b| a.t.total_cmp(&b.t))
-        {
-            Some(hit) => {
-                let n_rgb = 0.5 * (hit.normal + Vec3::ONE);
-                Color::new(n_rgb.x, n_rgb.y, n_rgb.z)
-            }
-            None => {
-                let unit_dir = ray.direction.normalize();
-                let a = 0.5 * (unit_dir.y + 1.0);
-                Color((1.0 - a) * Vec3::new(1.0, 1.0, 1.0) + a * Vec3::new(0.5, 0.7, 1.0))
-            }
-        };
-
+        let acc: Vec3 = (0..sample_count)
+            .map(|_| {
+                let ray = camera.view_point_to_ray(
+                    frag.coord.x as f32 + rng.random_range(-0.5..=0.5),
+                    frag.coord.y as f32 + rng.random_range(-0.5..=0.5),
+                    &extent,
+                );
+                match shapes
+                    .iter()
+                    .filter_map(|f| f.intersect(&ray, 0_.01..=f32::INFINITY))
+                    .min_by(|a, b| a.t.total_cmp(&b.t))
+                {
+                    Some(hit) => 0.5 * (hit.normal + Vec3::ONE),
+                    None => {
+                        let unit_dir = ray.direction.normalize();
+                        let a = 0.5 * (unit_dir.y + 1.0);
+                        (1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0)
+                    }
+                }
+            })
+            .sum();
+        *frag.color = Color(acc / sample_count as f32);
         if let Some(pb) = progress_bar
             && frag.coord.x == 0
         {
@@ -145,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let center = Vec3::ZERO;
 
     // Create scene resources and objects.
+    let mut rng = SmallRng::from_rng(&mut rand::rng());
     let mut rt = RenderTarget::new(iwidth as usize, iheight as usize);
     let camera = Camera {
         focal_length,
@@ -174,8 +189,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    render(&mut rt, &camera, &shapes, Some(&pb));
-
+    render(&mut rt, &camera, &shapes, &mut rng, 100, Some(&pb));
     pb.finish();
 
     // Output to '.ppm' format.
