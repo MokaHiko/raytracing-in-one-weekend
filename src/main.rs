@@ -9,6 +9,7 @@ use glam::Vec3;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use std::ops::RangeBounds;
 use std::{env, error::Error, io::Write};
 
 mod camera;
@@ -39,7 +40,7 @@ trait Hittable {
     ///
     /// Returns the ray parameter `t` of hit point `P(t) = O + tD`
     /// or [`None`] if misses.
-    fn intersect(&self, r: &Ray) -> Option<Hit>;
+    fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit>;
 }
 
 enum Shape {
@@ -47,9 +48,9 @@ enum Shape {
 }
 
 impl Shape {
-    fn intersect(&self, r: &Ray) -> Option<Hit> {
+    fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit> {
         match self {
-            Shape::Sphere(sphere) => sphere.intersect(r),
+            Shape::Sphere(sphere) => sphere.intersect(r, range),
         }
     }
 }
@@ -60,7 +61,7 @@ struct Sphere {
 }
 
 impl Hittable for Sphere {
-    fn intersect(&self, r: &Ray) -> Option<Hit> {
+    fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit> {
         let origin_to_center = self.center - r.origin;
         let a = r.direction.length_squared();
         let h = r.direction.dot(origin_to_center);
@@ -72,25 +73,29 @@ impl Hittable for Sphere {
             return None;
         }
 
-        // use `-` root of quadratic to get first hit
-        let t = (h - d.sqrt()) / a;
+        // use `-` root of quadratic first
+        let sqrtd = d.sqrt();
+        let mut t = (h - sqrtd) / a;
+        if !range.contains(&t) {
+            // try `+` root
+            t = (h + sqrtd) / a;
+            if !range.contains(&t) {
+                return None;
+            }
+        };
 
-        // t > 0.0 guarantees infront of ray
-        if t > 0.0 {
-            let point = r.at(t);
-            let normal = (point - self.center).normalize();
-            // determine if ray come from is outside shape's surface
-            let front_face = r.direction.dot(normal) < 0.0;
-            let normal = if front_face { normal } else { normal * -1.0 };
-            Some(Hit {
-                point,
-                normal,
-                t,
-                front_face,
-            })
-        } else {
-            None
-        }
+        let point = r.at(t);
+        let normal = (point - self.center).normalize();
+        // determine if ray come from is outside shape's surface
+        let front_face = r.direction.dot(normal) < 0.0;
+        let normal = if front_face { normal } else { normal * -1.0 };
+
+        Some(Hit {
+            point,
+            normal,
+            t,
+            front_face,
+        })
     }
 }
 
@@ -113,7 +118,7 @@ fn render<T: rand::RngCore>(
                 );
                 match shapes
                     .iter()
-                    .filter_map(|f| f.intersect(&ray))
+                    .filter_map(|f| f.intersect(&ray, 0_.01..=f32::INFINITY))
                     .min_by(|a, b| a.t.total_cmp(&b.t))
                 {
                     Some(hit) => 0.5 * (hit.normal + Vec3::ONE),
