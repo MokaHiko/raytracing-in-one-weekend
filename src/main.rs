@@ -28,7 +28,7 @@ struct Hit {
     #[allow(dead_code)]
     /// `true` if ray came from outside the surface.
     front_face: bool,
-    #[allow(dead_code)]
+    /// Parameter `t` of intersecting ray.
     t: f32,
 }
 
@@ -101,7 +101,11 @@ fn render(
     let extent = rt.extent2d();
     for frag in rt.fragments_mut() {
         let ray = camera.view_point_to_ray(frag.coord.x, frag.coord.y, &extent);
-        *frag.color = match shapes.iter().find_map(|f| f.intersect(&ray)) {
+        *frag.color = match shapes
+            .iter()
+            .filter_map(|f| f.intersect(&ray))
+            .min_by(|a, b| a.t.total_cmp(&b.t))
+        {
             Some(hit) => {
                 let n_rgb = 0.5 * (hit.normal + Vec3::ONE);
                 Color::new(n_rgb.x, n_rgb.y, n_rgb.z)
