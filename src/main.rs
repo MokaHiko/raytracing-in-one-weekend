@@ -245,9 +245,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     buf.write_all(&header)?;
 
     for color in rt.colors() {
-        let ir = (color.r() * 255.99) as u8;
-        let ig = (color.g() * 255.99) as u8;
-        let ib = (color.b() * 255.99) as u8;
+        let gamma_color = color.0.sqrt();
+        let ir = (gamma_color.x * 255.99) as u8;
+        let ig = (gamma_color.y * 255.99) as u8;
+        let ib = (gamma_color.z * 255.99) as u8;
         writeln!(buf, "{ir} {ig} {ib}")?;
     }
 
