@@ -24,12 +24,11 @@ use render_target::RenderTarget;
 
 /// Returned by [`Hittable::intersect`].
 struct Hit {
-    #[allow(dead_code)]
     point: Vec3,
     /// Unit normal always opposite to ray.
     normal: Vec3,
-    #[allow(dead_code)]
     /// `true` if ray came from outside the surface.
+    #[allow(dead_code)]
     front_face: bool,
     /// Parameter `t` of intersecting ray.
     t: f32,
@@ -99,11 +98,26 @@ impl Hittable for Sphere {
     }
 }
 
+trait Random {
+    fn random<T: rand::RngCore>(rng: &mut T) -> Self;
+}
+
+impl Random for Vec3 {
+    fn random<T: rand::RngCore>(rng: &mut T) -> Self {
+        Self::new(
+            rng.random_range(-1.0..1.0),
+            rng.random_range(-1.0..1.0),
+            rng.random_range(-1.0..1.0),
+        )
+    }
+}
+
 fn render<T: rand::RngCore>(
     rt: &mut RenderTarget,
     camera: &Camera,
     shapes: &[Shape],
     rng: &mut T,
+    max_depth: usize,
     sample_count: usize,
     progress_bar: Option<&ProgressBar>,
 ) {
@@ -111,25 +125,58 @@ fn render<T: rand::RngCore>(
     for frag in rt.fragments_mut() {
         let acc: Vec3 = (0..sample_count)
             .map(|_| {
-                let ray = camera.view_point_to_ray(
+                let mut depth = 0;
+                let mut throughput = Vec3::ONE;
+                let mut ray = camera.view_point_to_ray(
                     frag.coord.x as f32 + rng.random_range(-0.5..=0.5),
                     frag.coord.y as f32 + rng.random_range(-0.5..=0.5),
                     &extent,
                 );
-                match shapes
-                    .iter()
-                    .filter_map(|f| f.intersect(&ray, 0_.01..=f32::INFINITY))
-                    .min_by(|a, b| a.t.total_cmp(&b.t))
-                {
-                    Some(hit) => 0.5 * (hit.normal + Vec3::ONE),
-                    None => {
-                        let unit_dir = ray.direction.normalize();
-                        let a = 0.5 * (unit_dir.y + 1.0);
-                        (1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0)
+
+                loop {
+                    if depth >= max_depth {
+                        break Vec3::ZERO;
+                    }
+
+                    match shapes
+                        .iter()
+                        .filter_map(|f| f.intersect(&ray, 0.001..=f32::INFINITY))
+                        .min_by(|a, b| a.t.total_cmp(&b.t))
+                    {
+                        Some(hit) => {
+                            depth += 1;
+                            throughput *= 0.5;
+                            ray = Ray {
+                                origin: hit.point,
+                                direction: {
+                                    let rv3 = loop {
+                                        // reject any vectors outside a unit sphere.
+                                        let rv3 = Vec3::random(rng);
+                                        if rv3.length_squared() > 1.0 {
+                                            continue;
+                                        }
+
+                                        if let Some(rv3) = rv3.try_normalize() {
+                                            break rv3;
+                                        }
+                                    };
+
+                                    // bias new direction towards normal
+                                    rv3 + hit.normal
+                                },
+                            };
+                        }
+                        None => {
+                            let unit_dir = ray.direction.normalize();
+                            let a = 0.5 * (unit_dir.y + 1.0);
+                            return throughput
+                                * ((1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0));
+                        }
                     }
                 }
             })
             .sum();
+
         *frag.color = Color(acc / sample_count as f32);
         if let Some(pb) = progress_bar
             && frag.coord.x == 0
@@ -149,7 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let aspect_ratio = 16.0 / 9.0_f32;
     assert!(aspect_ratio > 0.0);
     let inv_aspect_ratio = aspect_ratio.recip();
-    let iwidth = 256;
+    let iwidth = 720;
     let iheight = ((iwidth as f32 * inv_aspect_ratio).round() as i32).max(1);
     let byte_count = (iwidth * iheight * 12) as usize;
 
@@ -170,7 +217,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // objects
     let shapes: Vec<Shape> = vec![
         Shape::Sphere(Sphere {
-            center: Vec3::new(0.0, 0.0, -2.0),
+            center: Vec3::new(0.0, 0.5, -2.0),
             radius: 1.0,
         }),
         Shape::Sphere(Sphere {
@@ -189,7 +236,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    render(&mut rt, &camera, &shapes, &mut rng, 100, Some(&pb));
+    render(&mut rt, &camera, &shapes, &mut rng, 10, 100, Some(&pb));
     pb.finish();
 
     // Output to '.ppm' format.
