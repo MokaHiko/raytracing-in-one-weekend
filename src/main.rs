@@ -23,8 +23,13 @@ use color::Color;
 use ray::Ray;
 use render_target::RenderTarget;
 
+struct Scatter {
+    ray: Ray,
+    attenuation: Color,
+}
+
 trait Material {
-    fn scatter(&self, rv3: Vec3, ray: &mut Ray, attenuation: &mut Color, hit: &mut Hit) -> bool;
+    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter>;
 }
 
 struct Lambertian {
@@ -32,15 +37,40 @@ struct Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, rv3: Vec3, ray: &mut Ray, attenuation: &mut Color, hit: &mut Hit) -> bool {
-        *attenuation = Color(attenuation.0 * self.albedo.0);
-        *ray = Ray {
+    fn scatter(&self, rv3: &Vec3, _: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
+        Some(Scatter {
+            ray: Ray {
+                origin: hit.point,
+                // bias new direction towards normal
+                direction: rv3 + hit.normal,
+            },
+            attenuation: Color(attenuation.0 * self.albedo.0),
+        })
+    }
+}
+
+struct Metal {
+    albedo: Color,
+    /// Fuziness value for reflection in the range 0.0 - 1.0.
+    fuzz: f32,
+}
+
+impl Material for Metal {
+    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
+        let ray = Ray {
             origin: hit.point,
-            // bias new direction towards normal
-            direction: rv3 + hit.normal,
+            // mirror direction around normal
+            direction: ray.direction.reflect(hit.normal).normalize() + self.fuzz * rv3,
         };
 
-        true
+        if ray.direction.dot(hit.normal) > 0.0 {
+            Some(Scatter {
+                ray,
+                attenuation: Color(attenuation.0 * self.albedo.0),
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -64,15 +94,14 @@ trait Hittable {
     fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit>;
 }
 
-/// Basic renderable unit.
 enum Shape {
-    Sphere((Sphere, Rc<dyn Material>)),
+    Sphere(Sphere),
 }
 
 impl Shape {
     fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit> {
         match self {
-            Shape::Sphere(sphere) => sphere.0.intersect(r, range),
+            Shape::Sphere(sphere) => sphere.intersect(r, range),
         }
     }
 }
@@ -135,10 +164,16 @@ impl Random for Vec3 {
     }
 }
 
+/// Basic renderable unit.
+struct Object {
+    shape: Shape,
+    material: Rc<dyn Material>,
+}
+
 fn render<T: rand::RngCore>(
     rt: &mut RenderTarget,
     camera: &Camera,
-    shapes: &[Shape],
+    objects: &[Object],
     rng: &mut T,
     max_depth: usize,
     sample_count: usize,
@@ -149,7 +184,7 @@ fn render<T: rand::RngCore>(
         let acc: Vec3 = (0..sample_count)
             .map(|_| {
                 let mut depth = 0;
-                let mut throughput = Color::new(1.0, 1.0, 1.0);
+                let mut attenuation = Color::new(1.0, 1.0, 1.0);
                 let mut ray = camera.view_point_to_ray(
                     frag.coord.x as f32 + rng.random_range(-0.5..=0.5),
                     frag.coord.y as f32 + rng.random_range(-0.5..=0.5),
@@ -161,29 +196,45 @@ fn render<T: rand::RngCore>(
                         break Vec3::ZERO;
                     }
 
-                    match shapes
+                    match objects
                         .iter()
-                        .filter_map(|f| f.intersect(&ray, 0.001..=f32::INFINITY))
-                        .min_by(|a, b| a.t.total_cmp(&b.t))
+                        .filter_map(|f| {
+                            f.shape
+                                .intersect(&ray, 0.001..=f32::INFINITY)
+                                .map(|hit| (hit, &f.material))
+                        })
+                        .min_by(|(a, _), (b, _)| a.t.total_cmp(&b.t))
                     {
-                        Some(mut hit) => {
+                        Some((hit, material)) => {
                             depth += 1;
 
-                            let material = Lambertian {
-                                albedo: Color::new(0.1, 0.2, 0.5),
+                            // Generate random vector on unit sphere via rejection.
+                            let rv3 = loop {
+                                let rv3 = Vec3::random(rng);
+                                if rv3.length_squared() > 1.0 {
+                                    continue;
+                                }
+
+                                if let Some(rv3) = rv3.try_normalize() {
+                                    break rv3;
+                                }
                             };
 
-                            material.scatter(
-                                Vec3::random(rng),
-                                &mut ray,
-                                &mut throughput,
-                                &mut hit,
-                            );
+                            if let Some(Scatter {
+                                ray: scattered_ray,
+                                attenuation: scattered_attenuation,
+                            }) = material.scatter(&rv3, &ray, &attenuation, &hit)
+                            {
+                                ray = scattered_ray;
+                                attenuation = scattered_attenuation;
+                            } else {
+                                return Vec3::ZERO;
+                            }
                         }
                         None => {
                             let unit_dir = ray.direction.normalize();
                             let a = 0.5 * (unit_dir.y + 1.0);
-                            return throughput.0
+                            return attenuation.0
                                 * ((1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0));
                         }
                     }
@@ -228,26 +279,55 @@ fn main() -> Result<(), Box<dyn Error>> {
         viewport_height,
     };
 
-    // objects
-    let material = Rc::new(Lambertian {
+    // materials
+    let center = Rc::new(Lambertian {
         albedo: Color::new(0.1, 0.2, 0.5),
     });
 
-    let shapes: Vec<Shape> = vec![
-        Shape::Sphere((
-            Sphere {
+    let ground = Rc::new(Lambertian {
+        albedo: Color::new(0.8, 0.8, 0.0),
+    });
+
+    let left = Rc::new(Metal {
+        albedo: Color::new(0.8, 0.8, 0.8),
+        fuzz: 0.25,
+    });
+
+    let right = Rc::new(Metal {
+        albedo: Color::new(0.8, 0.6, 0.2),
+        fuzz: 0.8,
+    });
+
+    // objects
+    let objects: Vec<Object> = vec![
+        Object {
+            shape: Shape::Sphere(Sphere {
                 center: Vec3::new(0.0, 0.5, -2.0),
                 radius: 1.0,
-            },
-            material.clone(),
-        )),
-        Shape::Sphere((
-            Sphere {
+            }),
+            material: center,
+        },
+        Object {
+            shape: Shape::Sphere(Sphere {
                 center: Vec3::new(0.0, -100.5, -2.0),
                 radius: 100.0,
-            },
-            material.clone(),
-        )),
+            }),
+            material: ground,
+        },
+        Object {
+            shape: Shape::Sphere(Sphere {
+                center: Vec3::new(-2.0, 0.5, -2.0),
+                radius: 1.0,
+            }),
+            material: left,
+        },
+        Object {
+            shape: Shape::Sphere(Sphere {
+                center: Vec3::new(2.0, 0.5, -2.0),
+                radius: 1.0,
+            }),
+            material: right,
+        },
     ];
 
     // render w progress bar
@@ -260,7 +340,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    render(&mut rt, &camera, &shapes, &mut rng, 10, 100, Some(&pb));
+    render(&mut rt, &camera, &objects, &mut rng, 10, 100, Some(&pb));
     pb.finish();
 
     // Output to '.ppm' format.
