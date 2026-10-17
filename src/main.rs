@@ -10,6 +10,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::ops::RangeBounds;
+use std::rc::Rc;
 use std::{env, error::Error, io::Write};
 
 mod camera;
@@ -21,6 +22,27 @@ use camera::Camera;
 use color::Color;
 use ray::Ray;
 use render_target::RenderTarget;
+
+trait Material {
+    fn scatter(&self, rv3: Vec3, ray: &mut Ray, attenuation: &mut Color, hit: &mut Hit) -> bool;
+}
+
+struct Lambertian {
+    albedo: Color,
+}
+
+impl Material for Lambertian {
+    fn scatter(&self, rv3: Vec3, ray: &mut Ray, attenuation: &mut Color, hit: &mut Hit) -> bool {
+        *attenuation = Color(attenuation.0 * self.albedo.0);
+        *ray = Ray {
+            origin: hit.point,
+            // bias new direction towards normal
+            direction: rv3 + hit.normal,
+        };
+
+        true
+    }
+}
 
 /// Returned by [`Hittable::intersect`].
 struct Hit {
@@ -42,14 +64,15 @@ trait Hittable {
     fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit>;
 }
 
+/// Basic renderable unit.
 enum Shape {
-    Sphere(Sphere),
+    Sphere((Sphere, Rc<dyn Material>)),
 }
 
 impl Shape {
     fn intersect<T: RangeBounds<f32>>(&self, r: &Ray, range: T) -> Option<Hit> {
         match self {
-            Shape::Sphere(sphere) => sphere.intersect(r, range),
+            Shape::Sphere(sphere) => sphere.0.intersect(r, range),
         }
     }
 }
@@ -126,7 +149,7 @@ fn render<T: rand::RngCore>(
         let acc: Vec3 = (0..sample_count)
             .map(|_| {
                 let mut depth = 0;
-                let mut throughput = Vec3::ONE;
+                let mut throughput = Color::new(1.0, 1.0, 1.0);
                 let mut ray = camera.view_point_to_ray(
                     frag.coord.x as f32 + rng.random_range(-0.5..=0.5),
                     frag.coord.y as f32 + rng.random_range(-0.5..=0.5),
@@ -143,33 +166,24 @@ fn render<T: rand::RngCore>(
                         .filter_map(|f| f.intersect(&ray, 0.001..=f32::INFINITY))
                         .min_by(|a, b| a.t.total_cmp(&b.t))
                     {
-                        Some(hit) => {
+                        Some(mut hit) => {
                             depth += 1;
-                            throughput *= 0.5;
-                            ray = Ray {
-                                origin: hit.point,
-                                direction: {
-                                    let rv3 = loop {
-                                        // reject any vectors outside a unit sphere.
-                                        let rv3 = Vec3::random(rng);
-                                        if rv3.length_squared() > 1.0 {
-                                            continue;
-                                        }
 
-                                        if let Some(rv3) = rv3.try_normalize() {
-                                            break rv3;
-                                        }
-                                    };
-
-                                    // bias new direction towards normal
-                                    rv3 + hit.normal
-                                },
+                            let material = Lambertian {
+                                albedo: Color::new(0.1, 0.2, 0.5),
                             };
+
+                            material.scatter(
+                                Vec3::random(rng),
+                                &mut ray,
+                                &mut throughput,
+                                &mut hit,
+                            );
                         }
                         None => {
                             let unit_dir = ray.direction.normalize();
                             let a = 0.5 * (unit_dir.y + 1.0);
-                            return throughput
+                            return throughput.0
                                 * ((1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0));
                         }
                     }
@@ -215,15 +229,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // objects
+    let material = Rc::new(Lambertian {
+        albedo: Color::new(0.1, 0.2, 0.5),
+    });
+
     let shapes: Vec<Shape> = vec![
-        Shape::Sphere(Sphere {
-            center: Vec3::new(0.0, 0.5, -2.0),
-            radius: 1.0,
-        }),
-        Shape::Sphere(Sphere {
-            center: Vec3::new(0.0, -100.5, -2.0),
-            radius: 100.0,
-        }),
+        Shape::Sphere((
+            Sphere {
+                center: Vec3::new(0.0, 0.5, -2.0),
+                radius: 1.0,
+            },
+            material.clone(),
+        )),
+        Shape::Sphere((
+            Sphere {
+                center: Vec3::new(0.0, -100.5, -2.0),
+                radius: 100.0,
+            },
+            material.clone(),
+        )),
     ];
 
     // render w progress bar
