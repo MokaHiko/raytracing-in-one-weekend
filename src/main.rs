@@ -23,64 +23,12 @@ use color::Color;
 use ray::Ray;
 use render_target::RenderTarget;
 
-struct Scatter {
-    ray: Ray,
-    attenuation: Color,
-}
-
-trait Material {
-    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter>;
-}
-
-struct Lambertian {
-    albedo: Color,
-}
-
-impl Material for Lambertian {
-    fn scatter(&self, rv3: &Vec3, _: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
-        Some(Scatter {
-            ray: Ray {
-                origin: hit.point,
-                // bias new direction towards normal
-                direction: rv3 + hit.normal,
-            },
-            attenuation: Color(attenuation.0 * self.albedo.0),
-        })
-    }
-}
-
-struct Metal {
-    albedo: Color,
-    /// Fuziness value for reflection in the range 0.0 - 1.0.
-    fuzz: f32,
-}
-
-impl Material for Metal {
-    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
-        let ray = Ray {
-            origin: hit.point,
-            // mirror direction around normal
-            direction: ray.direction.reflect(hit.normal).normalize() + self.fuzz * rv3,
-        };
-
-        if ray.direction.dot(hit.normal) > 0.0 {
-            Some(Scatter {
-                ray,
-                attenuation: Color(attenuation.0 * self.albedo.0),
-            })
-        } else {
-            None
-        }
-    }
-}
-
 /// Returned by [`Hittable::intersect`].
 struct Hit {
     point: Vec3,
     /// Unit normal always opposite to ray.
     normal: Vec3,
     /// `true` if ray came from outside the surface.
-    #[allow(dead_code)]
     front_face: bool,
     /// Parameter `t` of intersecting ray.
     t: f32,
@@ -161,6 +109,97 @@ impl Random for Vec3 {
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
         )
+    }
+}
+
+struct Scatter {
+    ray: Ray,
+    attenuation: Color,
+}
+
+trait Material {
+    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter>;
+}
+
+struct Lambertian {
+    albedo: Color,
+}
+
+impl Material for Lambertian {
+    fn scatter(&self, rv3: &Vec3, _: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
+        Some(Scatter {
+            ray: Ray {
+                origin: hit.point,
+                // bias new direction towards normal
+                direction: rv3 + hit.normal,
+            },
+            attenuation: Color(attenuation.0 * self.albedo.0),
+        })
+    }
+}
+
+struct Metal {
+    albedo: Color,
+    /// Fuziness value for reflection in the range 0.0 - 1.0.
+    fuzz: f32,
+}
+
+impl Material for Metal {
+    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
+        let ray = Ray {
+            origin: hit.point,
+            // mirror direction around normal
+            direction: ray.direction.reflect(hit.normal).normalize() + self.fuzz * rv3,
+        };
+
+        if ray.direction.dot(hit.normal) > 0.0 {
+            Some(Scatter {
+                ray,
+                attenuation: Color(attenuation.0 * self.albedo.0),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+struct Dielectric {
+    /// Refractive index in vacuum or air, or the ratio of the material's refractive index over
+    /// the refractive index of the enclosing media.
+    refraction_index: f32,
+}
+
+impl Material for Dielectric {
+    fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter> {
+        let unit_dir = ray.direction.normalize();
+        let ri = if hit.front_face {
+            self.refraction_index.recip()
+        } else {
+            self.refraction_index
+        };
+
+        // Schlick's approximation for reflectance
+        let r0 = ((1.0 - ri) / (1.0 + ri)).powi(2);
+
+        // account floating point error's like 1.0000000002
+        let cos_theta = (-unit_dir).dot(hit.normal).min(1.0);
+        let reflectance = r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5);
+
+        let refract = unit_dir.refract(hit.normal, ri);
+
+        Some(Scatter {
+            ray: Ray {
+                origin: hit.point,
+                // HACK: Here we're using the general random rv3 with
+                // components in [-1.0 .. 1.0] remapped to [0.0 .. 1.0] as our generator.
+                direction: if refract == Vec3::ZERO || reflectance > (rv3.x + 1.0) * 0.5 {
+                    unit_dir.reflect(hit.normal)
+                } else {
+                    refract
+                },
+            },
+            attenuation: *attenuation,
+        })
     }
 }
 
@@ -288,9 +327,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         albedo: Color::new(0.8, 0.8, 0.0),
     });
 
-    let left = Rc::new(Metal {
-        albedo: Color::new(0.8, 0.8, 0.8),
-        fuzz: 0.25,
+    // glass like material with refractive index of 1.5
+    let left = Rc::new(Dielectric {
+        refraction_index: 1.5,
+    });
+
+    // air bubble enclosed by `left`
+    let bubble = Rc::new(Dielectric {
+        refraction_index: 1.0 / 1.5,
     });
 
     let right = Rc::new(Metal {
@@ -320,6 +364,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 radius: 1.0,
             }),
             material: left,
+        },
+        Object {
+            shape: Shape::Sphere(Sphere {
+                center: Vec3::new(-2.0, 0.5, -2.0),
+                radius: 0.8,
+            }),
+            material: bubble,
         },
         Object {
             shape: Shape::Sphere(Sphere {
