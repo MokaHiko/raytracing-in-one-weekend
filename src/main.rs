@@ -300,22 +300,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let aspect_ratio = 16.0 / 9.0_f32;
     assert!(aspect_ratio > 0.0);
     let inv_aspect_ratio = aspect_ratio.recip();
-    let iwidth = 720;
+    let iwidth = 420;
     let iheight = ((iwidth as f32 * inv_aspect_ratio).round() as i32).max(1);
     let byte_count = (iwidth * iheight * 12) as usize;
 
     // camera args
-    let focal_length = 1.0_f32;
-    let viewport_height = 2.0;
-    let center = Vec3::ZERO;
+    let vfov = 90_f32.to_radians();
+    let center = Vec3::new(-2.0, 2.0, 3.0);
 
     // Create scene resources and objects.
     let mut rng = SmallRng::from_rng(&mut rand::rng());
     let mut rt = RenderTarget::new(iwidth as usize, iheight as usize);
     let camera = Camera {
-        focal_length,
         center,
-        viewport_height,
+        vfov,
+        look_at: Vec3::new(0.0, 0.0, 0.0),
     };
 
     // materials
