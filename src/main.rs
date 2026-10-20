@@ -290,10 +290,11 @@ fn render<T: rand::RngCore>(
 fn main() -> Result<(), Box<dyn Error>> {
     // Parse command line arguments.
     let args: Vec<String> = env::args().collect();
-    assert!(args.len() > 1);
+    let Some(out_path) = args.get(1) else {
+        eprintln!("usage: {} <output.ppm>", args[0]);
+        std::process::exit(2);
+    };
 
-    // image args
-    let out_path = &args[1];
     let aspect_ratio = 16.0 / 9.0_f32;
     assert!(aspect_ratio > 0.0);
     let inv_aspect_ratio = aspect_ratio.recip();
@@ -363,7 +364,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let center = Vec3::new(
                 a as f32 + 0.9 * rng.random::<f32>(),
                 0.2,
-                b as f32 + 0.9 as f32 * rng.random::<f32>(),
+                b as f32 + 0.9_f32 * rng.random::<f32>(),
             );
 
             if (center - Vec3::new(4.0, 0.2, 0.0)).length() > 0.9 {

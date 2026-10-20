@@ -16,8 +16,8 @@ pub struct Camera {
 impl Camera {
     /// Create a [`Ray`] from origin to fragment in an extent.
     pub fn get_ray<T: rand::RngCore>(&self, rng: &mut T, x: f32, y: f32, extent: &Extent2D) -> Ray {
-        let x = x as f32 + rng.random_range(-0.5..=0.5);
-        let y = y as f32 + rng.random_range(-0.5..=0.5);
+        let x = x + rng.random_range(-0.5..=0.5);
+        let y = y + rng.random_range(-0.5..=0.5);
 
         // right handed orthonormal basis vectors
         // with with camera facing -z
