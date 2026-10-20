@@ -224,11 +224,8 @@ fn render<T: rand::RngCore>(
             .map(|_| {
                 let mut depth = 0;
                 let mut attenuation = Color::new(1.0, 1.0, 1.0);
-                let mut ray = camera.view_point_to_ray(
-                    frag.coord.x as f32 + rng.random_range(-0.5..=0.5),
-                    frag.coord.y as f32 + rng.random_range(-0.5..=0.5),
-                    &extent,
-                );
+                let mut ray =
+                    camera.get_ray(rng, frag.coord.x as f32, frag.coord.y as f32, &extent);
 
                 loop {
                     if depth >= max_depth {
@@ -300,13 +297,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let aspect_ratio = 16.0 / 9.0_f32;
     assert!(aspect_ratio > 0.0);
     let inv_aspect_ratio = aspect_ratio.recip();
-    let iwidth = 420;
+    let iwidth = 1200;
     let iheight = ((iwidth as f32 * inv_aspect_ratio).round() as i32).max(1);
     let byte_count = (iwidth * iheight * 12) as usize;
 
     // camera args
-    let vfov = 90_f32.to_radians();
-    let center = Vec3::new(-2.0, 2.0, 3.0);
+    let vfov = 20_f32.to_radians();
+    let center = Vec3::new(13.0, 2.0, 3.0);
 
     // Create scene resources and objects.
     let mut rng = SmallRng::from_rng(&mut rand::rng());
@@ -315,70 +312,105 @@ fn main() -> Result<(), Box<dyn Error>> {
         center,
         vfov,
         look_at: Vec3::new(0.0, 0.0, 0.0),
+        focus_dist: 10.0,
+        defocus_angle: 0.6_f32.to_radians(),
     };
 
-    // materials
-    let center = Rc::new(Lambertian {
-        albedo: Color::new(0.1, 0.2, 0.5),
-    });
-
-    let ground = Rc::new(Lambertian {
-        albedo: Color::new(0.8, 0.8, 0.0),
-    });
-
-    // glass like material with refractive index of 1.5
-    let left = Rc::new(Dielectric {
-        refraction_index: 1.5,
-    });
-
-    // air bubble enclosed by `left`
-    let bubble = Rc::new(Dielectric {
-        refraction_index: 1.0 / 1.5,
-    });
-
-    let right = Rc::new(Metal {
-        albedo: Color::new(0.8, 0.6, 0.2),
-        fuzz: 0.8,
-    });
-
     // objects
-    let objects: Vec<Object> = vec![
+    let mut objects: Vec<Object> = vec![
+        // ground
         Object {
             shape: Shape::Sphere(Sphere {
-                center: Vec3::new(0.0, 0.5, -2.0),
+                center: Vec3::new(0.0, -1000.0, 0.0),
+                radius: 1000.0,
+            }),
+            material: Rc::new(Lambertian {
+                albedo: Color::new(0.5, 0.5, 0.5),
+            }),
+        },
+        Object {
+            shape: Shape::Sphere(Sphere {
+                center: Vec3::new(0.0, 1.0, 0.0),
                 radius: 1.0,
             }),
-            material: center,
-        },
-        Object {
-            shape: Shape::Sphere(Sphere {
-                center: Vec3::new(0.0, -100.5, -2.0),
-                radius: 100.0,
+            material: Rc::new(Dielectric {
+                refraction_index: 1.5,
             }),
-            material: ground,
         },
         Object {
             shape: Shape::Sphere(Sphere {
-                center: Vec3::new(-2.0, 0.5, -2.0),
+                center: Vec3::new(-4.0, 1.0, 0.0),
                 radius: 1.0,
             }),
-            material: left,
-        },
-        Object {
-            shape: Shape::Sphere(Sphere {
-                center: Vec3::new(-2.0, 0.5, -2.0),
-                radius: 0.8,
+            material: Rc::new(Lambertian {
+                albedo: Color::new(0.4, 0.2, 0.1),
             }),
-            material: bubble,
         },
         Object {
             shape: Shape::Sphere(Sphere {
-                center: Vec3::new(2.0, 0.5, -2.0),
+                center: Vec3::new(4.0, 1.0, 0.0),
                 radius: 1.0,
             }),
-            material: right,
+            material: Rc::new(Metal {
+                albedo: Color::new(0.7, 0.6, 0.5),
+                fuzz: 0.0,
+            }),
         },
     ];
+
+    for a in -11..11 {
+        for b in -11..11 {
+            let center = Vec3::new(
+                a as f32 + 0.9 * rng.random::<f32>(),
+                0.2,
+                b as f32 + 0.9 as f32 * rng.random::<f32>(),
+            );
+
+            if (center - Vec3::new(4.0, 0.2, 0.0)).length() > 0.9 {
+                match rng.random::<f32>() {
+                    // diffuse
+                    x if x < 0.8 => {
+                        let albedo = Color::new(rng.random(), rng.random(), rng.random());
+                        objects.push(Object {
+                            shape: Shape::Sphere(Sphere {
+                                center,
+                                radius: 0.2,
+                            }),
+                            material: Rc::new(Lambertian { albedo }),
+                        });
+                    }
+                    // metal
+                    x if x < 0.95 => {
+                        let albedo = Color(Vec3 {
+                            x: rng.random_range(0.5..=1.0),
+                            y: rng.random_range(0.5..=1.0),
+                            z: rng.random_range(0.5..=1.0),
+                        });
+                        let fuzz: f32 = rng.random();
+                        objects.push(Object {
+                            shape: Shape::Sphere(Sphere {
+                                center,
+                                radius: 0.2,
+                            }),
+                            material: Rc::new(Metal { albedo, fuzz }),
+                        });
+                    }
+                    // glass
+                    _ => {
+                        objects.push(Object {
+                            shape: Shape::Sphere(Sphere {
+                                center,
+                                radius: 0.2,
+                            }),
+                            material: Rc::new(Dielectric {
+                                refraction_index: 1.5,
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     // render w progress bar
     let pb = ProgressBar::new(iheight as u64);
@@ -390,7 +422,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    render(&mut rt, &camera, &objects, &mut rng, 10, 100, Some(&pb));
+    render(&mut rt, &camera, &objects, &mut rng, 50, 500, Some(&pb));
     pb.finish();
 
     // Output to '.ppm' format.
