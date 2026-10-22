@@ -1,5 +1,3 @@
-use glam::IVec2;
-
 use crate::color::Color;
 
 pub struct RenderTarget {
@@ -11,11 +9,6 @@ pub struct RenderTarget {
 pub struct Extent2D {
     pub width: usize,
     pub height: usize,
-}
-
-pub struct FragMut<'a> {
-    pub color: &'a mut Color,
-    pub coord: IVec2,
 }
 
 impl RenderTarget {
@@ -39,10 +32,7 @@ impl RenderTarget {
         self.buffer.as_slice()
     }
 
-    pub fn fragments_mut(&mut self) -> impl Iterator<Item = FragMut<'_>> {
-        self.buffer.iter_mut().enumerate().map(|(i, color)| {
-            let coord = IVec2::new((i % self.width) as i32, (i / self.width) as i32);
-            FragMut { color, coord }
-        })
+    pub fn fragments_mut(&mut self) -> &mut [Color] {
+        self.buffer.as_mut_slice()
     }
 }
