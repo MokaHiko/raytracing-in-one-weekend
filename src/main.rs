@@ -5,12 +5,13 @@
 /// Implementation Details:
 /// - Right handed coordinate system
 /// - Traced from `pixel_00` (upper left) to pixel_wh (bottom right).
-use glam::Vec3;
+use glam::{IVec2, Vec3};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 use std::ops::RangeBounds;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::{env, error::Error, io::Write};
 
 mod camera;
@@ -22,6 +23,10 @@ use camera::Camera;
 use color::Color;
 use ray::Ray;
 use render_target::RenderTarget;
+
+/// Seed for scene generation, fixed so a render is reproducible and can be
+/// diffed against another run or against the GPU path. The value itself is arbitrary.
+const SCENE_SEED: u64 = 0x5EED_B00C_CAFE_1234;
 
 /// Returned by [`Hittable::intersect`].
 struct Hit {
@@ -117,7 +122,7 @@ struct Scatter {
     attenuation: Color,
 }
 
-trait Material {
+trait Material: Send + Sync {
     fn scatter(&self, rv3: &Vec3, ray: &Ray, attenuation: &Color, hit: &Hit) -> Option<Scatter>;
 }
 
@@ -206,85 +211,92 @@ impl Material for Dielectric {
 /// Basic renderable unit.
 struct Object {
     shape: Shape,
-    material: Rc<dyn Material>,
+    material: Arc<dyn Material>,
 }
 
-fn render<T: rand::RngCore>(
+fn render(
     rt: &mut RenderTarget,
     camera: &Camera,
     objects: &[Object],
-    rng: &mut T,
     max_depth: usize,
     sample_count: usize,
     progress_bar: Option<&ProgressBar>,
 ) {
     let extent = rt.extent2d();
-    for frag in rt.fragments_mut() {
-        let acc: Vec3 = (0..sample_count)
-            .map(|_| {
-                let mut depth = 0;
-                let mut attenuation = Color::new(1.0, 1.0, 1.0);
-                let mut ray =
-                    camera.get_ray(rng, frag.coord.x as f32, frag.coord.y as f32, &extent);
 
-                loop {
-                    if depth >= max_depth {
-                        break Vec3::ZERO;
-                    }
+    // split work between scanlines of render target
+    rt.fragments_mut()
+        .par_chunks_mut(extent.width)
+        .enumerate()
+        .for_each(|(y, colors)| {
+            let mut rng = SmallRng::seed_from_u64(y as u64);
+            for (x, color) in colors.iter_mut().enumerate() {
+                let coord = IVec2::new(x as i32, y as i32);
+                let acc: Vec3 = (0..sample_count)
+                    .map(|_| {
+                        let mut depth = 0;
+                        let mut attenuation = Color::new(1.0, 1.0, 1.0);
+                        let mut ray =
+                            camera.get_ray(&mut rng, coord.x as f32, coord.y as f32, &extent);
 
-                    match objects
-                        .iter()
-                        .filter_map(|f| {
-                            f.shape
-                                .intersect(&ray, 0.001..=f32::INFINITY)
-                                .map(|hit| (hit, &f.material))
-                        })
-                        .min_by(|(a, _), (b, _)| a.t.total_cmp(&b.t))
-                    {
-                        Some((hit, material)) => {
-                            depth += 1;
+                        loop {
+                            if depth >= max_depth {
+                                break Vec3::ZERO;
+                            }
 
-                            // Generate random vector on unit sphere via rejection.
-                            let rv3 = loop {
-                                let rv3 = Vec3::random(rng);
-                                if rv3.length_squared() > 1.0 {
-                                    continue;
-                                }
-
-                                if let Some(rv3) = rv3.try_normalize() {
-                                    break rv3;
-                                }
-                            };
-
-                            if let Some(Scatter {
-                                ray: scattered_ray,
-                                attenuation: scattered_attenuation,
-                            }) = material.scatter(&rv3, &ray, &attenuation, &hit)
+                            match objects
+                                .iter()
+                                .filter_map(|f| {
+                                    f.shape
+                                        .intersect(&ray, 0.001..=f32::INFINITY)
+                                        .map(|hit| (hit, &f.material))
+                                })
+                                .min_by(|(a, _), (b, _)| a.t.total_cmp(&b.t))
                             {
-                                ray = scattered_ray;
-                                attenuation = scattered_attenuation;
-                            } else {
-                                return Vec3::ZERO;
+                                Some((hit, material)) => {
+                                    depth += 1;
+
+                                    // Generate random vector on unit sphere via rejection.
+                                    let rv3 = loop {
+                                        let rv3 = Vec3::random(&mut rng);
+                                        if rv3.length_squared() > 1.0 {
+                                            continue;
+                                        }
+
+                                        if let Some(rv3) = rv3.try_normalize() {
+                                            break rv3;
+                                        }
+                                    };
+
+                                    if let Some(Scatter {
+                                        ray: scattered_ray,
+                                        attenuation: scattered_attenuation,
+                                    }) = material.scatter(&rv3, &ray, &attenuation, &hit)
+                                    {
+                                        ray = scattered_ray;
+                                        attenuation = scattered_attenuation;
+                                    } else {
+                                        return Vec3::ZERO;
+                                    }
+                                }
+                                None => {
+                                    let unit_dir = ray.direction.normalize();
+                                    let a = 0.5 * (unit_dir.y + 1.0);
+                                    return attenuation.0
+                                        * ((1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0));
+                                }
                             }
                         }
-                        None => {
-                            let unit_dir = ray.direction.normalize();
-                            let a = 0.5 * (unit_dir.y + 1.0);
-                            return attenuation.0
-                                * ((1.0 - a) * Vec3::ONE + a * Vec3::new(0.5, 0.7, 1.0));
-                        }
-                    }
-                }
-            })
-            .sum();
+                    })
+                    .sum();
 
-        *frag.color = Color(acc / sample_count as f32);
-        if let Some(pb) = progress_bar
-            && frag.coord.x == 0
-        {
-            pb.inc(1);
-        }
-    }
+                *color = Color(acc / sample_count as f32);
+            }
+
+            if let Some(pb) = progress_bar {
+                pb.inc(1);
+            }
+        });
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -307,7 +319,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let center = Vec3::new(13.0, 2.0, 3.0);
 
     // Create scene resources and objects.
-    let mut rng = SmallRng::from_rng(&mut rand::rng());
+    let mut rng = SmallRng::seed_from_u64(SCENE_SEED);
     let mut rt = RenderTarget::new(iwidth as usize, iheight as usize);
     let camera = Camera {
         center,
@@ -325,7 +337,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 center: Vec3::new(0.0, -1000.0, 0.0),
                 radius: 1000.0,
             }),
-            material: Rc::new(Lambertian {
+            material: Arc::new(Lambertian {
                 albedo: Color::new(0.5, 0.5, 0.5),
             }),
         },
@@ -334,7 +346,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 center: Vec3::new(0.0, 1.0, 0.0),
                 radius: 1.0,
             }),
-            material: Rc::new(Dielectric {
+            material: Arc::new(Dielectric {
                 refraction_index: 1.5,
             }),
         },
@@ -343,7 +355,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 center: Vec3::new(-4.0, 1.0, 0.0),
                 radius: 1.0,
             }),
-            material: Rc::new(Lambertian {
+            material: Arc::new(Lambertian {
                 albedo: Color::new(0.4, 0.2, 0.1),
             }),
         },
@@ -352,7 +364,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 center: Vec3::new(4.0, 1.0, 0.0),
                 radius: 1.0,
             }),
-            material: Rc::new(Metal {
+            material: Arc::new(Metal {
                 albedo: Color::new(0.7, 0.6, 0.5),
                 fuzz: 0.0,
             }),
@@ -377,7 +389,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 center,
                                 radius: 0.2,
                             }),
-                            material: Rc::new(Lambertian { albedo }),
+                            material: Arc::new(Lambertian { albedo }),
                         });
                     }
                     // metal
@@ -393,7 +405,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 center,
                                 radius: 0.2,
                             }),
-                            material: Rc::new(Metal { albedo, fuzz }),
+                            material: Arc::new(Metal { albedo, fuzz }),
                         });
                     }
                     // glass
@@ -403,7 +415,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 center,
                                 radius: 0.2,
                             }),
-                            material: Rc::new(Dielectric {
+                            material: Arc::new(Dielectric {
                                 refraction_index: 1.5,
                             }),
                         });
@@ -423,7 +435,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .progress_chars("=>-"),
     );
 
-    render(&mut rt, &camera, &objects, &mut rng, 50, 500, Some(&pb));
+    render(&mut rt, &camera, &objects, 50, 500, Some(&pb));
     pb.finish();
 
     // Output to '.ppm' format.
