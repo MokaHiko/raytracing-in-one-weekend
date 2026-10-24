@@ -25,7 +25,7 @@ use ray::Ray;
 use render_target::RenderTarget;
 
 /// Seed for scene generation, fixed so a render is reproducible and can be
-/// diffed against another run or against the GPU path. The value itself is arbitrary.
+/// diffed against another run. The value itself is arbitrary.
 const SCENE_SEED: u64 = 0x5EED_B00C_CAFE_1234;
 
 /// Returned by [`Hittable::intersect`].
@@ -103,18 +103,13 @@ impl Hittable for Sphere {
     }
 }
 
-trait Random {
-    fn random<T: rand::RngCore>(rng: &mut T) -> Self;
-}
-
-impl Random for Vec3 {
-    fn random<T: rand::RngCore>(rng: &mut T) -> Self {
-        Self::new(
-            rng.random_range(-1.0..1.0),
-            rng.random_range(-1.0..1.0),
-            rng.random_range(-1.0..1.0),
-        )
-    }
+/// Random vector with each component in `[-1.0, 1.0)`.
+fn random_vec3<T: rand::RngCore>(rng: &mut T) -> Vec3 {
+    Vec3::new(
+        rng.random_range(-1.0..1.0),
+        rng.random_range(-1.0..1.0),
+        rng.random_range(-1.0..1.0),
+    )
 }
 
 struct Scatter {
@@ -257,7 +252,7 @@ fn render(
 
                                     // Generate random vector on unit sphere via rejection.
                                     let rv3 = loop {
-                                        let rv3 = Vec3::random(&mut rng);
+                                        let rv3 = random_vec3(&mut rng);
                                         if rv3.length_squared() > 1.0 {
                                             continue;
                                         }

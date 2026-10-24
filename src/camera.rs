@@ -37,7 +37,7 @@ impl Camera {
         let extent = render_target.extent2d();
 
         // right handed orthonormal basis vectors
-        // with with camera facing -z
+        // with camera facing -z
         let w = (center - look_at).normalize();
         let u = Vec3::Y.cross(w).normalize();
         let v = w.cross(u).normalize();
@@ -71,7 +71,7 @@ impl Camera {
         }
     }
 
-    /// Create a [`Ray`] from origin to fragment in an extent.
+    /// Create a [`Ray`] from the defocus disc through a jittered sample of pixel `(x, y)`.
     pub fn get_ray<T: rand::RngCore>(&self, rng: &mut T, x: f32, y: f32) -> Ray {
         let x = x + rng.random_range(-0.5..=0.5);
         let y = y + rng.random_range(-0.5..=0.5);
