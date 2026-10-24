@@ -19,7 +19,7 @@ mod color;
 mod ray;
 mod render_target;
 
-use camera::Camera;
+use camera::{Camera, Description as CameraDescription};
 use color::Color;
 use ray::Ray;
 use render_target::RenderTarget;
@@ -236,8 +236,7 @@ fn render(
                     .map(|_| {
                         let mut depth = 0;
                         let mut attenuation = Color::new(1.0, 1.0, 1.0);
-                        let mut ray =
-                            camera.get_ray(&mut rng, coord.x as f32, coord.y as f32, &extent);
+                        let mut ray = camera.get_ray(&mut rng, coord.x as f32, coord.y as f32);
 
                         loop {
                             if depth >= max_depth {
@@ -321,13 +320,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create scene resources and objects.
     let mut rng = SmallRng::seed_from_u64(SCENE_SEED);
     let mut rt = RenderTarget::new(iwidth as usize, iheight as usize);
-    let camera = Camera {
-        center,
-        vfov,
-        look_at: Vec3::new(0.0, 0.0, 0.0),
-        focus_dist: 10.0,
-        defocus_angle: 0.6_f32.to_radians(),
-    };
+    let camera = Camera::new(
+        &rt,
+        &CameraDescription {
+            center,
+            vfov,
+            look_at: Vec3::new(0.0, 0.0, 0.0),
+            focus_dist: 10.0,
+            defocus_angle: 0.6_f32.to_radians(),
+        },
+    );
 
     // objects
     let mut objects: Vec<Object> = vec![
